@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Lint every shell file
+        run: |
+          shellcheck --version
+          shellcheck -x --severity=style \
+            plugins/earcon/scripts/lib.sh \
+            plugins/earcon/scripts/notify.sh \
+            plugins/earcon/bin/earcon \
+            tests/run.sh
+
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install ffmpeg
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          fi
+      - name: Run the suite
+        run: tests/run.sh
+
+  test-without-tools:
+    name: tests (no ffmpeg, no python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Hide ffmpeg and python from PATH
+        run: |
+          mkdir -p "$HOME/blocked"
+          for tool in ffmpeg ffprobe python3 python yt-dlp; do
+            printf '#!/bin/sh\nexit 127\n' > "$HOME/blocked/$tool"
+            chmod +x "$HOME/blocked/$tool"
+          done
+          echo "$HOME/blocked" >> "$GITHUB_PATH"
+      - name: The hook must still filter correctly
+        run: tests/run.sh hooks
+
+  manifests:
+    name: manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate JSON and cross-check metadata
+        run: python3 tests/check_manifests.py
