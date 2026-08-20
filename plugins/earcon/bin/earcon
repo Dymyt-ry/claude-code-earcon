@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+# earcon — manage the sounds Claude Code plays for you.
+#
+# Lives in the plugin's bin/, which Claude Code puts on the Bash tool's PATH
+# while the plugin is enabled. Unlike hook scripts it receives no plugin
+# environment, so it resolves everything from its own location.
+
+set -uo pipefail
+
+VERSION="1.0.0"
+MAX_DURATION=10
+DEFAULT_DURATION=2.5
+
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do
+    self_dir="$(cd -P -- "$(dirname -- "$self")" && pwd)"
+    self="$(readlink -- "$self")"
+    case "$self" in /*) ;; *) self="$self_dir/$self" ;; esac
+done
+PLUGIN_DIR="$(cd -P -- "$(dirname -- "$self")/.." && pwd)"
+# shellcheck source-path=SCRIPTDIR source=../scripts/lib.sh
+. "$PLUGIN_DIR/scripts/lib.sh"
+
+TMPDIR_EARCON=""
+cleanup() { [ -n "$TMPDIR_EARCON" ] && rm -rf "$TMPDIR_EARCON"; }
+trap cleanup EXIT INT TERM
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    C_DIM=$'\033[2m'; C_B=$'\033[1m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_OFF=$'\033[0m'
+else
+    C_DIM=""; C_B=""; C_OK=""; C_ERR=""; C_OFF=""
+fi
+
+# Progress goes to stderr: the stdout of some of these helpers is a value the
+# caller reads back.
+die()  { printf '%searcon:%s %s\n' "$C_ERR" "$C_OFF" "$1" >&2; exit 1; }
+note() { printf '%s%s%s\n' "$C_DIM" "$1" "$C_OFF" >&2; }
+ok()   { printf '%s✓%s %s\n' "$C_OK" "$C_OFF" "$1"; }
+
+usage() {
+    cat <<USAGE
+${C_B}earcon${C_OFF} — the sounds Claude Code plays for you
+
+${C_B}USAGE${C_OFF}
+  earcon set <slot> <source> [options]
+  earcon test [slot]
+  earcon reset <slot|all>
+  earcon status
+  earcon --help | --version
+
+${C_B}SLOTS${C_OFF}
+  attention   Claude needs you: permission prompt, question, plan approval
+  done        Claude finished the turn and handed control back
+
+${C_B}SOURCES${C_OFF}
+  A local audio file, a direct audio URL, or — when yt-dlp is installed —
+  any page yt-dlp can pull audio from, including YouTube.
+
+${C_B}OPTIONS${C_OFF}
+  --start <t>   Offset into the source: 7, 7.5, 1:03, 0:01:03.  Default 0
+  --dur <s>     Seconds to keep. Default ${DEFAULT_DURATION}, hard cap ${MAX_DURATION}
+  --gain <dB>   Level adjustment applied on import, e.g. -6 or 3. Default 0
+  --no-normalize  Keep the source's own level instead of matching the others
+  --no-fade     Skip the short fade in and out around the clip
+  -y, --yes     Overwrite an existing sound without asking
+  -q, --quiet   Don't play the result back afterwards
+
+${C_B}EXAMPLES${C_OFF}
+  earcon set attention ~/sounds/ping.wav
+  earcon set done https://example.com/bell.wav
+  earcon set done 'https://youtu.be/VIDEO' --start 0:12 --dur 1.5 --gain -4
+  earcon test
+  earcon reset all
+
+Sounds are stored as WAV in $(earcon_home).
+You are responsible for having the right to use whatever you import.
+USAGE
+}
+
+require_slot() {
+    case "$1" in
+        attention|done) printf '%s' "$1" ;;
+        *) die "unknown slot '$1'. Use 'attention' or 'done'." ;;
+    esac
+}
+
+is_url() { case "$1" in http://*|https://*) return 0 ;; *) return 1 ;; esac; }
+
+# --- set ---------------------------------------------------------------------
+
+cmd_set() {
+    local slot="" source="" start="0" duration="$DEFAULT_DURATION" gain="0"
+    local fade=1 normalize=1 assume_yes=0 quiet=0
+
+    [ $# -ge 1 ] || { usage; exit 1; }
+    slot="$(require_slot "$1")" || exit 1
+    shift
+    [ $# -ge 1 ] || die "'earcon set $slot' needs a file or URL. See 'earcon --help'."
+    source="$1"; shift
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --start) start="${2:-}"; shift 2 || die "--start needs a value" ;;
+            --dur)   duration="${2:-}"; shift 2 || die "--dur needs a value" ;;
+            --gain)  gain="${2:-}"; shift 2 || die "--gain needs a value" ;;
+            --no-fade) fade=0; shift ;;
+            --no-normalize) normalize=0; shift ;;
+            -y|--yes)  assume_yes=1; shift ;;
+            -q|--quiet) quiet=1; shift ;;
+            *) die "unknown option '$1'. See 'earcon --help'." ;;
+        esac
+    done
+
+    # Validate before anything reaches ffmpeg, so a stray value can never be
+    # read as an option.
+    [[ "$start" =~ ^[0-9]+(:[0-5]?[0-9]){0,2}(\.[0-9]+)?$ ]] \
+        || die "--start must look like 7, 7.5, 1:03 or 0:01:03 (got '$start')"
+    [[ "$duration" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+        || die "--dur must be a number of seconds (got '$duration')"
+    awk -v d="$duration" -v m="$MAX_DURATION" 'BEGIN { exit !(d > 0 && d <= m) }' \
+        || die "--dur must be between 0 and $MAX_DURATION seconds (got '$duration')"
+    [[ "$gain" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] \
+        || die "--gain must be a number of dB (got '$gain')"
+    awk -v g="$gain" 'BEGIN { exit !(g >= -40 && g <= 40) }' \
+        || die "--gain must be between -40 and 40 dB (got '$gain')"
+
+    local home target
+    home="$(earcon_home)"
+    target="$home/$slot.wav"
+    mkdir -p "$home" || die "cannot create $home"
+
+    if [ -f "$target" ] && [ "$assume_yes" -eq 0 ] && [ -t 0 ]; then
+        printf 'Replace the current %s sound? [y/N] ' "$slot"
+        local answer; read -r answer
+        case "$answer" in y|Y|yes|YES) ;; *) note "Kept the existing sound."; return 0 ;; esac
+    fi
+
+    TMPDIR_EARCON="$(mktemp -d "${TMPDIR:-/tmp}/earcon.XXXXXX")" || die "cannot create a temp dir"
+    local fetched
+    fetched="$(fetch_source "$source")" || exit 1
+
+    encode "$fetched" "$target" "$start" "$duration" "$gain" "$fade" "$normalize" || exit 1
+
+    local length
+    length="$(clip_length "$target")"
+    ok "$slot sound set${length:+ ($length)} — $target"
+    if [ "$quiet" -eq 0 ]; then
+        play_sound "$target" "1" || note "No audio player found; skipping preview."
+    fi
+}
+
+fetch_source() {
+    local source="$1" out errlog downloaded client
+    if [ -f "$source" ]; then
+        printf '%s' "$source"
+        return 0
+    fi
+    if ! is_url "$source"; then
+        die "no such file, and not an http(s) URL: $source"
+    fi
+
+    out="$TMPDIR_EARCON/source"
+    errlog="$TMPDIR_EARCON/fetch.log"
+    : >"$errlog"
+
+    if have yt-dlp; then
+        note "Fetching with yt-dlp…"
+        # YouTube serves some of its player clients a 403 at any given moment,
+        # and which ones still work changes without notice. Try yt-dlp's own
+        # default first, then the clients that tend to survive.
+        for client in "" tv web_safari ios; do
+            local -a args=(--no-playlist --quiet --no-warnings --no-progress
+                           -f "bestaudio/best" -o "$out.%(ext)s")
+            [ -n "$client" ] && args+=(--extractor-args "youtube:player_client=$client")
+            if yt-dlp "${args[@]}" -- "$source" >>"$errlog" 2>&1; then
+                downloaded="$(find "$TMPDIR_EARCON" -maxdepth 1 -name 'source.*' -type f | head -n 1)"
+                if [ -n "$downloaded" ]; then
+                    printf '%s' "$downloaded"
+                    return 0
+                fi
+            fi
+            rm -f "$out".* 2>/dev/null
+        done
+
+        if is_media_site "$source"; then
+            die "yt-dlp could not download that.
+$(format_log "$errlog")
+      Sites like this change often; 'yt-dlp -U' fixes most of these."
+        fi
+        note "yt-dlp could not handle it; trying a plain download…"
+    elif is_media_site "$source"; then
+        die "that link needs yt-dlp, which is not installed.
+      Install it first:  brew install yt-dlp   |   pipx install yt-dlp"
+    fi
+
+    if have curl; then
+        note "Downloading…"
+        curl -fsSL --max-time 120 -o "$out" -- "$source" 2>>"$errlog" \
+            || die "download failed: $source
+$(format_log "$errlog")"
+    elif have wget; then
+        note "Downloading…"
+        wget -q -O "$out" -- "$source" 2>>"$errlog" \
+            || die "download failed: $source
+$(format_log "$errlog")"
+    else
+        die "need curl, wget or yt-dlp to fetch a URL"
+    fi
+    [ -s "$out" ] || die "downloaded nothing from $source"
+    printf '%s' "$out"
+}
+
+# A page yt-dlp has to extract from, rather than a link to an audio file.
+is_media_site() {
+    case "$1" in
+        *youtube.com*|*youtu.be*|*soundcloud.com*|*vimeo.com*|*bandcamp.com*|*twitch.tv*)
+            return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+format_log() {
+    [ -s "$1" ] || return 0
+    { grep -iE 'error|forbidden|unavailable|unsupported' "$1" || tail -n 2 "$1"; } \
+        | awk '!seen[$0]++' | tail -n 2 | sed 's/^/      /'
+}
+
+encode() {
+    local input="$1" target="$2" start="$3" duration="$4" gain="$5" fade="$6" normalize="$7"
+
+    if ! have ffmpeg; then
+        # Without ffmpeg the only honest thing to do is copy a local file
+        # through untouched — and say so when that loses requested edits.
+        [ -f "$input" ] || die "ffmpeg is required to import from a URL"
+        if [ "$start" != "0" ] || [ "$gain" != "0" ]; then
+            die "ffmpeg is required for --start and --gain.
+      Install it first:  brew install ffmpeg   |   apt install ffmpeg"
+        fi
+        rm -f "$target"
+        cp -- "$input" "$target" || die "could not copy $input"
+        note "ffmpeg not found — copied the file as-is, untrimmed."
+        return 0
+    fi
+
+    local filters="volume=${gain}dB"
+    if [ "$fade" -eq 1 ]; then
+        local fade_out_at
+        fade_out_at="$(awk -v d="$duration" 'BEGIN { v = d - 0.08; if (v < 0) v = 0; printf "%.3f", v }')"
+        filters="$filters,afade=t=in:st=0:d=0.005,afade=t=out:st=${fade_out_at}:d=0.08"
+    fi
+
+    # Write a fresh file rather than through whatever is sitting at that path.
+    rm -f "$target"
+
+    local staged="$TMPDIR_EARCON/staged.wav"
+    ffmpeg -hide_banner -loglevel error -y \
+        -ss "$start" -i "$input" -t "$duration" \
+        -af "$filters" -ac 1 -ar 44100 -c:a pcm_s16le \
+        "$staged" </dev/null || die "ffmpeg could not decode that source"
+    [ -s "$staged" ] || die "the import produced an empty file — is --start past the end?"
+
+    local length
+    length="$(clip_length_seconds "$staged")"
+    awk -v l="${length:-0}" 'BEGIN { exit !(l > 0.02) }' \
+        || die "the import produced silence — check --start and --dur"
+
+    local peak
+    peak="$(peak_dbfs "$staged")"
+
+    if [ "$normalize" -eq 1 ] && [ -n "$peak" ]; then
+        # A notification is useless if it is quieter than whatever the user is
+        # listening to. Bring every import to roughly the level of the bundled
+        # tones instead of inheriting a random passage's loudness.
+        local adjust
+        adjust="$(awk -v p="$peak" 'BEGIN {
+            a = -3.0 - p
+            if (a > 30) a = 30
+            if (a < -30) a = -30
+            printf "%.1f", a
+        }')"
+        ffmpeg -hide_banner -loglevel error -y -i "$staged" \
+            -af "volume=${adjust}dB" -ac 1 -ar 44100 -c:a pcm_s16le \
+            "$target" </dev/null || die "ffmpeg could not normalize the clip"
+        peak="$(peak_dbfs "$target")"
+    else
+        mv "$staged" "$target" || die "could not write $target"
+    fi
+
+    if [ -n "$peak" ] && awk -v p="$peak" 'BEGIN { exit !(p < -25) }'; then
+        note "Heads up: this clip peaks at ${peak} dBFS — you may not hear it. Try a louder part with --start, or --gain."
+    fi
+}
+
+# Peak level in dBFS, or empty when it cannot be measured.
+peak_dbfs() {
+    ffmpeg -hide_banner -nostats -i "$1" -af volumedetect -f null - 2>&1 \
+        | sed -n 's/.*max_volume: \(-*[0-9.]*\) dB.*/\1/p' | head -n 1
+}
+
+clip_length_seconds() {
+    have ffprobe || return 0
+    ffprobe -v error -show_entries format=duration -of csv=p=0 "$1" 2>/dev/null | head -n 1
+}
+
+clip_length() {
+    local seconds; seconds="$(clip_length_seconds "$1")"
+    [ -n "$seconds" ] && awk -v s="$seconds" 'BEGIN { printf "%.2fs", s }'
+}
+
+# --- test / reset / status ---------------------------------------------------
+
+cmd_test() {
+    local slots=("attention" "done")
+    [ $# -ge 1 ] && slots=("$(require_slot "$1")")
+    detect_player >/dev/null || die "no audio player found. See 'earcon status'."
+    local slot sound
+    for slot in "${slots[@]}"; do
+        if sound="$(resolve_sound "$slot")"; then
+            printf '%s▸%s %-9s %s\n' "$C_B" "$C_OFF" "$slot" "$sound"
+            play_sound "$sound" "${EARCON_VOLUME:-1}"
+            sleep 1.2
+        else
+            printf '%s!%s %-9s no sound file\n' "$C_ERR" "$C_OFF" "$slot"
+        fi
+    done
+}
+
+cmd_reset() {
+    [ $# -ge 1 ] || die "'earcon reset' needs a slot, or 'all'."
+    local home; home="$(earcon_home)"
+    local slots=()
+    if [ "$1" = "all" ]; then slots=("attention" "done"); else slots=("$(require_slot "$1")"); fi
+    local slot removed=0
+    for slot in "${slots[@]}"; do
+        if [ -f "$home/$slot.wav" ]; then
+            rm -f "$home/$slot.wav" && ok "$slot reset to the bundled sound" && removed=1
+        fi
+    done
+    [ "$removed" -eq 0 ] && note "Nothing to reset; both slots already use the bundled sounds."
+    return 0
+}
+
+installed() { if have "$1"; then printf 'yes'; else printf 'no'; fi; }
+
+cmd_status() {
+    local home player slot sound origin
+    home="$(earcon_home)"
+    printf '%searcon %s%s\n\n' "$C_B" "$VERSION" "$C_OFF"
+    printf '  %-12s %s\n' "plugin" "$PLUGIN_DIR"
+    printf '  %-12s %s\n' "sounds" "$home"
+    if player="$(detect_player)"; then
+        printf '  %-12s %s\n' "player" "$player"
+    else
+        printf '  %-12s %snone found%s\n' "player" "$C_ERR" "$C_OFF"
+    fi
+    printf '  %-12s ffmpeg %s · ffprobe %s · yt-dlp %s\n\n' "tools" \
+        "$(installed ffmpeg)" "$(installed ffprobe)" "$(installed yt-dlp)"
+
+    for slot in attention "done"; do
+        if sound="$(resolve_sound "$slot")"; then
+            case "$sound" in
+                "$home/"*)        origin="custom" ;;
+                "$PLUGIN_DIR/"*)  origin="bundled" ;;
+                *)                origin="override" ;;
+            esac
+            printf '  %-12s %s%s%s  %s\n' "$slot" "$C_DIM" "$origin" "$C_OFF" "$sound"
+        else
+            printf '  %-12s %sno sound file%s\n' "$slot" "$C_ERR" "$C_OFF"
+        fi
+    done
+}
+
+case "${1:-}" in
+    set)              shift; cmd_set "$@" ;;
+    test)             shift; cmd_test "$@" ;;
+    reset)            shift; cmd_reset "$@" ;;
+    status)           shift; cmd_status "$@" ;;
+    -h|--help|help|"") usage ;;
+    -V|--version)     printf 'earcon %s\n' "$VERSION" ;;
+    *)                die "unknown command '$1'. See 'earcon --help'." ;;
+esac
