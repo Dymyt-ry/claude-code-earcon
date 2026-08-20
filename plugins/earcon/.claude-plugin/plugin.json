@@ -1,0 +1,53 @@
+{
+  "name": "earcon",
+  "displayName": "earcon",
+  "version": "1.0.0",
+  "description": "Plays a short sound when Claude Code needs your attention and when it finishes a turn. Bring your own sound from a file, a URL, or YouTube.",
+  "author": {
+    "name": "Timofej Golobokov",
+    "url": "https://github.com/Dymyt-ry"
+  },
+  "homepage": "https://github.com/Dymyt-ry/claude-code-earcon",
+  "repository": "https://github.com/Dymyt-ry/claude-code-earcon",
+  "license": "MIT",
+  "keywords": [
+    "notifications",
+    "sound",
+    "audio",
+    "hooks",
+    "attention",
+    "productivity"
+  ],
+  "userConfig": {
+    "on_attention": {
+      "type": "boolean",
+      "title": "Sound when Claude needs you",
+      "description": "Permission prompts, multi-option questions, and plan approvals.",
+      "default": true
+    },
+    "on_done": {
+      "type": "boolean",
+      "title": "Sound when Claude finishes",
+      "description": "Plays once per turn, when control comes back to you.",
+      "default": true
+    },
+    "attention_sound": {
+      "type": "file",
+      "title": "Attention sound",
+      "description": "Optional. Leave empty for the bundled tone, or set one later with `earcon set attention <file|url>`."
+    },
+    "done_sound": {
+      "type": "file",
+      "title": "Done sound",
+      "description": "Optional. Leave empty for the bundled tone, or set one later with `earcon set done <file|url>`."
+    },
+    "volume": {
+      "type": "number",
+      "title": "Volume",
+      "description": "0.0 is silent, 1.0 is full volume.",
+      "default": 1,
+      "min": 0,
+      "max": 1
+    }
+  }
+}

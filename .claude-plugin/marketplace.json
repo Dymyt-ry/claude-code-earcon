@@ -1,0 +1,37 @@
+{
+  "name": "earcon",
+  "owner": {
+    "name": "Timofej Golobokov",
+    "url": "https://github.com/Dymyt-ry"
+  },
+  "description": "Hear when Claude Code needs you.",
+  "version": "1.0.0",
+  "renames": {
+    "fahh": "earcon",
+    "done": "earcon"
+  },
+  "plugins": [
+    {
+      "name": "earcon",
+      "source": "./plugins/earcon",
+      "description": "Plays a short sound when Claude Code needs your attention and when it finishes a turn. Bring your own sound from a file, a URL, or YouTube.",
+      "version": "1.0.0",
+      "category": "productivity",
+      "keywords": [
+        "notifications",
+        "sound",
+        "audio",
+        "hooks",
+        "attention",
+        "productivity"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/Dymyt-ry/claude-code-earcon",
+      "repository": "https://github.com/Dymyt-ry/claude-code-earcon",
+      "author": {
+        "name": "Timofej Golobokov",
+        "url": "https://github.com/Dymyt-ry"
+      }
+    }
+  ]
+}
