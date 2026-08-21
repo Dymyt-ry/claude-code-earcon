@@ -112,7 +112,7 @@ change them later:
 | Sound when Claude needs you | on | Permission prompts, questions, plan approvals |
 | Sound when Claude finishes | on | The `Stop` sound |
 | Attention sound / Done sound | bundled | Point either at a file you already have |
-| Volume | `1.0` | `0.0` is silent |
+| Volume | `1.0` | `0.0` is silent; intermediate levels work where the player supports them |
 
 Environment variables override all of it, which is handy for one project or one
 shell:
@@ -121,9 +121,9 @@ shell:
 |---|---|
 | `EARCON_ENABLED=0` | Silence everything, without uninstalling |
 | `EARCON_ATTENTION_SOUND` `EARCON_DONE_SOUND` | Use these files instead |
-| `EARCON_VOLUME` | `0.0`–`1.0` |
+| `EARCON_VOLUME` | `0.0`–`1.0`; `aplay` and PowerShell use mute/full volume only |
 | `EARCON_HOME` | Where imported sounds live |
-| `EARCON_DEBUG=1` | Log every hook payload and decision to `$EARCON_HOME/debug.log` |
+| `EARCON_DEBUG=1` | Log allowlisted event metadata and decisions to `$EARCON_HOME/debug.log` |
 
 A sound is resolved in that order — environment variable, then install-time
 setting, then anything `earcon set` imported, then the bundled tone. The first
@@ -134,9 +134,9 @@ to the next option instead of silence.
 
 | | Playback | Notes |
 |---|---|---|
-| **macOS** | `afplay`, built in | Nothing to install |
-| **Linux** | `ffplay`, `mpv`, `mpg123`, `paplay` or `aplay` | Any one of them |
-| **WSL / Git Bash** | `powershell.exe`, built in | WAV only |
+| **macOS** | `afplay`, built in | Nothing to install; adjustable volume |
+| **Linux** | `ffplay`, `mpv`, `mpg123`, `paplay` or `aplay` | Any one; `aplay` supports mute/full volume only |
+| **WSL / Git Bash** | `powershell.exe`, built in | WAV only; mute/full volume only |
 
 Importing with `earcon set` additionally wants `ffmpeg` for trimming and
 level-matching, and `yt-dlp` for anything that isn't a direct file URL. Neither
@@ -182,7 +182,7 @@ Everything else follows from three constraints:
 git clone https://github.com/Dymyt-ry/claude-code-earcon
 cd claude-code-earcon
 
-tests/run.sh                  # 44 cases, no network, no audio
+tests/run.sh                  # 49 cases, no network, no audio
 tests/run.sh hooks            # just the filter table
 python3 tests/check_manifests.py
 

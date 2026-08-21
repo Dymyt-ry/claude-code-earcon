@@ -23,21 +23,47 @@ PAYLOAD="$(cat)"
 
 log_debug() {
     [ "${EARCON_DEBUG:-0}" = "1" ] || return 0
-    local dir log
+    local dir log tmp decision event notification tool stop_active slot
     dir="$(earcon_home)"
     log="$dir/debug.log"
+    umask 077
     mkdir -p "$dir" 2>/dev/null || return 0
+    chmod 700 "$dir" 2>/dev/null || return 0
     # Own the log outright. Writing to a predictable path under /tmp would let
     # anyone on the machine pre-create it as a symlink and steer these appends.
     [ -L "$log" ] && rm -f "$log"
+    [ -e "$log" ] || : >"$log"
+    [ -f "$log" ] || return 0
+    chmod 600 "$log" 2>/dev/null || return 0
     # Keep it from growing without bound across long sessions.
     if [ -f "$log" ] && [ "$(wc -c <"$log" 2>/dev/null || echo 0)" -gt 262144 ]; then
-        tail -c 131072 "$log" >"$log.tmp" 2>/dev/null && mv "$log.tmp" "$log"
+        tmp="$(mktemp "$dir/.debug.XXXXXX")" || return 0
+        tail -c 131072 "$log" >"$tmp" 2>/dev/null && mv "$tmp" "$log"
+        rm -f "$tmp"
     fi
-    {
-        printf '=== %s slot=%s decision=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$SLOT" "${1:-?}"
-        printf '%s\n' "$PAYLOAD"
-    } >>"$log" 2>/dev/null || true
+
+    # Never persist the raw hook payload: it may contain prompts, paths, tool
+    # inputs, or credentials. Keep only known enum values useful for tracing.
+    decision="$(debug_value "$1")"
+    event="$(debug_value "$(json_field "$PAYLOAD" hook_event_name)")"
+    notification="$(debug_value "$(json_field "$PAYLOAD" notification_type)")"
+    tool="$(debug_value "$(json_field "$PAYLOAD" tool_name)")"
+    stop_active="$(debug_value "$(json_field "$PAYLOAD" stop_hook_active)")"
+    slot="$(debug_value "$SLOT")"
+    printf '%s slot=%s decision=%s event=%s type=%s tool=%s stop_active=%s\n' \
+        "$(date '+%Y-%m-%dT%H:%M:%S')" "$slot" "$decision" "$event" \
+        "$notification" "$tool" "$stop_active" >>"$log" 2>/dev/null || true
+}
+
+debug_value() {
+    case "$1" in
+        attention|done|Stop|SubagentStop|Notification|PreToolUse|\
+        permission_prompt|agent_needs_input|idle_prompt|auth_success|\
+        AskUserQuestion|ExitPlanMode|true|false|disabled|filtered|no-sound|play|no-player) \
+            printf '%s' "$1" ;;
+        '') printf '%s' '-' ;;
+        *) printf '%s' other ;;
+    esac
 }
 
 enabled_for_slot() {
@@ -88,23 +114,23 @@ should_play() {
 
 main() {
     if ! enabled_for_slot; then
-        log_debug "silent (disabled)"
+        log_debug "disabled"
         return 0
     fi
     if ! should_play; then
-        log_debug "silent (filtered)"
+        log_debug "filtered"
         return 0
     fi
 
     local sound volume
     if ! sound="$(resolve_sound "$SLOT")"; then
-        log_debug "silent (no sound file)"
+        log_debug "no-sound"
         return 0
     fi
     volume="${EARCON_VOLUME:-${CLAUDE_PLUGIN_OPTION_VOLUME:-1}}"
 
-    log_debug "play $sound"
-    play_sound "$sound" "$volume" || log_debug "silent (no audio player)"
+    log_debug "play"
+    play_sound "$sound" "$volume" || log_debug "no-player"
     return 0
 }
 

@@ -21,9 +21,8 @@ paste here
 **Debug log**
 
 Set `EARCON_DEBUG=1`, reproduce, then paste the relevant lines from
-`~/.claude/earcon/debug.log`. Redact anything you'd rather not share — the
-`hook_event_name`, `notification_type`/`tool_name`, and `decision=` fields are
-usually enough.
+`~/.claude/earcon/debug.log`. It contains only allowlisted event metadata and
+the playback decision, never the raw hook payload.
 
 ```
 paste here

@@ -22,7 +22,11 @@ PLUGIN_DIR="$(cd -P -- "$(dirname -- "$self")/.." && pwd)"
 . "$PLUGIN_DIR/scripts/lib.sh"
 
 TMPDIR_EARCON=""
-cleanup() { [ -n "$TMPDIR_EARCON" ] && rm -rf "$TMPDIR_EARCON"; }
+PUBLISH_EARCON=""
+cleanup() {
+    [ -n "$PUBLISH_EARCON" ] && rm -f "$PUBLISH_EARCON"
+    [ -n "$TMPDIR_EARCON" ] && rm -rf "$TMPDIR_EARCON"
+}
 trap cleanup EXIT INT TERM
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -227,6 +231,11 @@ format_log() {
 
 encode() {
     local input="$1" target="$2" start="$3" duration="$4" gain="$5" fade="$6" normalize="$7"
+    local target_dir target_name
+    target_dir="$(dirname -- "$target")"
+    target_name="$(basename -- "$target")"
+    PUBLISH_EARCON="$(mktemp "$target_dir/.${target_name}.XXXXXX")" \
+        || die "could not stage $target"
 
     if ! have ffmpeg; then
         # Without ffmpeg the only honest thing to do is copy a local file
@@ -236,8 +245,9 @@ encode() {
             die "ffmpeg is required for --start and --gain.
       Install it first:  brew install ffmpeg   |   apt install ffmpeg"
         fi
-        rm -f "$target"
-        cp -- "$input" "$target" || die "could not copy $input"
+        cp -- "$input" "$PUBLISH_EARCON" || die "could not copy $input"
+        mv -- "$PUBLISH_EARCON" "$target" || die "could not write $target"
+        PUBLISH_EARCON=""
         note "ffmpeg not found — copied the file as-is, untrimmed."
         return 0
     fi
@@ -248,9 +258,6 @@ encode() {
         fade_out_at="$(awk -v d="$duration" 'BEGIN { v = d - 0.08; if (v < 0) v = 0; printf "%.3f", v }')"
         filters="$filters,afade=t=in:st=0:d=0.005,afade=t=out:st=${fade_out_at}:d=0.08"
     fi
-
-    # Write a fresh file rather than through whatever is sitting at that path.
-    rm -f "$target"
 
     local staged="$TMPDIR_EARCON/staged.wav"
     ffmpeg -hide_banner -loglevel error -y \
@@ -280,11 +287,14 @@ encode() {
         }')"
         ffmpeg -hide_banner -loglevel error -y -i "$staged" \
             -af "volume=${adjust}dB" -ac 1 -ar 44100 -c:a pcm_s16le \
-            "$target" </dev/null || die "ffmpeg could not normalize the clip"
-        peak="$(peak_dbfs "$target")"
+            -f wav "$PUBLISH_EARCON" </dev/null || die "ffmpeg could not normalize the clip"
+        peak="$(peak_dbfs "$PUBLISH_EARCON")"
     else
-        mv "$staged" "$target" || die "could not write $target"
+        cp -- "$staged" "$PUBLISH_EARCON" || die "could not stage $target"
     fi
+
+    mv -- "$PUBLISH_EARCON" "$target" || die "could not write $target"
+    PUBLISH_EARCON=""
 
     if [ -n "$peak" ] && awk -v p="$peak" 'BEGIN { exit !(p < -25) }'; then
         note "Heads up: this clip peaks at ${peak} dBFS — you may not hear it. Try a louder part with --start, or --gain."

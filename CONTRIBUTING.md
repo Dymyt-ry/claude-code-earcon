@@ -32,7 +32,7 @@ claude --plugin-dir ./plugins/earcon
 That loads the working copy over any installed version for one session. Run
 `/reload-plugins` after edits instead of restarting.
 
-To see what a hook actually received:
+To see the allowlisted event metadata and playback decision:
 
 ```bash
 EARCON_DEBUG=1 claude --plugin-dir ./plugins/earcon
@@ -67,7 +67,8 @@ Include:
 - OS and version, and whether you're on WSL
 - `claude --version`
 - The output of `earcon status`
-- A redacted excerpt from `~/.claude/earcon/debug.log` with `EARCON_DEBUG=1` set
+- An excerpt from `~/.claude/earcon/debug.log` with `EARCON_DEBUG=1` set; the
+  log stores only allowlisted event metadata, never the raw hook payload
 
 "It doesn't play" and "it plays too often" are both bugs here, and the debug
 log usually settles which one it is in a line or two.

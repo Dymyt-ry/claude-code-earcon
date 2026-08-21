@@ -109,6 +109,9 @@ detect_player() {
 play_sound() {
     local file="$1" volume player win_path
     volume="$(normalize_volume "${2:-1}")"
+    # aplay and SoundPlayer have no per-process volume control. Short-circuit
+    # zero for every backend so mute always means mute.
+    [ "$volume" = "0.000" ] && return 0
     player="$(detect_player)" || return 1
     case "$player" in
         afplay)  ( afplay -v "$volume" "$file" >/dev/null 2>&1 & ) ;;

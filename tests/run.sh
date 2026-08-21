@@ -46,6 +46,10 @@ fail() {
     [ $# -gt 1 ] && printf '      %s\n' "$2"
 }
 
+file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+}
+
 # The player is deliberately backgrounded so a hook never waits on audio, so
 # every assertion has to allow for the playback landing slightly late.
 marker_seq=0
@@ -180,6 +184,52 @@ test_hooks() {
         fail 'an out-of-range volume is clamped' "player got '$(cat "$PLAYED.volume" 2>/dev/null)'"
     fi
 
+    local volume_bin="$WORK/volume-bin" volume_marker backend
+    mkdir -p "$volume_bin"
+    for backend in aplay powershell.exe; do
+        cat >"$volume_bin/$backend" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$0" >"$EARCON_TEST_MARKER"
+STUB
+        chmod +x "$volume_bin/$backend"
+        volume_marker="$WORK/zero-$backend"
+        # The script is intentionally single-quoted: its variables belong to
+        # the child shell, not this test process.
+        # shellcheck disable=SC2016
+        env PATH="$volume_bin:/usr/bin:/bin" TEST_PLAYER="$backend" \
+            EARCON_TEST_MARKER="$volume_marker" /bin/bash -c '
+                PLUGIN_DIR="$1"
+                . "$2"
+                detect_player() { printf "%s" "$TEST_PLAYER"; }
+                play_sound "$3" 0
+            ' _ "$PLUGIN" "$PLUGIN/scripts/lib.sh" "$PLUGIN/assets/done.wav"
+        sleep 0.1
+        if [ ! -e "$volume_marker" ]; then
+            pass "volume 0 skips $backend"
+        else
+            fail "volume 0 skips $backend" 'the player was launched'
+        fi
+    done
+
+    printf '\n\033[1mdebug log\033[0m\n'
+    rm -rf "${WORK:?}/home"
+    mkdir -m 777 "$WORK/home"
+    : >"$WORK/home/debug.log"
+    chmod 666 "$WORK/home/debug.log"
+    run_notify attention '{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"token=never-log-this","tool_input":{"api_key":"also-secret"}}' EARCON_DEBUG=1
+    local debug_log="$WORK/home/debug.log" debug_text
+    debug_text="$(cat "$debug_log" 2>/dev/null)"
+    if [ "$(file_mode "$WORK/home")" = 700 ] &&
+       [ "$(file_mode "$debug_log")" = 600 ] &&
+       [ "${debug_text#*decision=play event=Notification type=permission_prompt}" != "$debug_text" ] &&
+       [ "${debug_text#*never-log-this}" = "$debug_text" ] &&
+       [ "${debug_text#*also-secret}" = "$debug_text" ]; then
+        pass 'debug log is private and contains allowlisted metadata only'
+    else
+        fail 'debug log is private and contains allowlisted metadata only' \
+            "dir=$(file_mode "$WORK/home") log=$(file_mode "$debug_log") content=$debug_text"
+    fi
+
     printf '\n\033[1mno working python\033[0m\n'
     # macOS ships a python3 shim that is on PATH but fails on every call.
     printf '#!/bin/sh\nexit 1\n' > "$STUB_BIN/python3"
@@ -242,6 +292,52 @@ test_cli() {
     refute 'rejects a malformed --start'  run_cli set 'done' "$PLUGIN/assets/done.wav" --start -oops -y
     refute 'rejects an over-long --dur'   run_cli set 'done' "$PLUGIN/assets/done.wav" --dur 99 -y
     refute 'rejects an absurd --gain'     run_cli set 'done' "$PLUGIN/assets/done.wav" --gain 500 -y
+
+    mkdir -p "$home"
+    printf '%s' 'original sound' >"$home/done.wav"
+    local cli_tmp="$WORK/cli-tmp"
+    mkdir -p "$cli_tmp"
+    cat >"$STUB_BIN/ffmpeg" <<'STUB'
+#!/bin/sh
+for output do :; done
+printf '%s' 'partial output' >"$output"
+exit 1
+STUB
+    chmod +x "$STUB_BIN/ffmpeg"
+    if TMPDIR="$cli_tmp" run_cli set 'done' "$PLUGIN/assets/attention.wav" -y -q >/dev/null 2>&1; then
+        fail 'failed ffmpeg import preserves the current sound' 'expected a non-zero exit'
+    elif [ "$(cat "$home/done.wav")" = 'original sound' ] &&
+         [ -z "$(find "$home" -maxdepth 1 -name '.done.wav.*' -print -quit)" ] &&
+         [ -z "$(find "$cli_tmp" -mindepth 1 -print -quit)" ]; then
+        pass 'failed ffmpeg import preserves the current sound'
+    else
+        fail 'failed ffmpeg import preserves the current sound' 'target changed or staging files leaked'
+    fi
+    rm -f "$STUB_BIN/ffmpeg"
+
+    local copy_bin="$WORK/copy-bin" copy_home="$WORK/copy-home" copy_tmp="$WORK/copy-tmp" tool
+    mkdir -p "$copy_bin" "$copy_home" "$copy_tmp"
+    for tool in dirname basename mkdir mktemp rm mv awk; do
+        ln -s "$(command -v "$tool")" "$copy_bin/$tool"
+    done
+    cat >"$copy_bin/cp" <<'STUB'
+#!/bin/sh
+for target do :; done
+printf '%s' 'partial copy' >"$target"
+exit 1
+STUB
+    chmod +x "$copy_bin/cp"
+    printf '%s' 'original sound' >"$copy_home/done.wav"
+    if env PATH="$copy_bin" EARCON_HOME="$copy_home" TMPDIR="$copy_tmp" NO_COLOR=1 \
+        /bin/bash "$CLI" set 'done' "$PLUGIN/assets/attention.wav" -y -q >/dev/null 2>&1; then
+        fail 'failed fallback copy preserves the current sound' 'expected a non-zero exit'
+    elif [ "$(cat "$copy_home/done.wav")" = 'original sound' ] &&
+         [ -z "$(find "$copy_home" -maxdepth 1 -name '.done.wav.*' -print -quit)" ] &&
+         [ -z "$(find "$copy_tmp" -mindepth 1 -print -quit)" ]; then
+        pass 'failed fallback copy preserves the current sound'
+    else
+        fail 'failed fallback copy preserves the current sound' 'target changed or staging files leaked'
+    fi
 
     if ! command -v ffmpeg >/dev/null 2>&1; then
         printf '  \033[2m- ffmpeg not installed, skipping import tests\033[0m\n'

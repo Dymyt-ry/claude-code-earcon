@@ -21,10 +21,11 @@ migrates existing installs automatically.
 - Install-time configuration (`userConfig`): per-slot on/off switches, custom
   sound paths, and volume, exposed to the hook as `CLAUDE_PLUGIN_OPTION_*`.
 - `EARCON_ENABLED=0` silences the plugin without uninstalling it.
-- Volume control across every supported player.
+- Adjustable volume where the player supports it, with reliable mute across
+  every supported player.
 - WSL and Git Bash playback through `powershell.exe` (WAV only).
 - `agent_needs_input` notifications now count as needing your attention.
-- Test suite: 44 cases asserting which file each payload plays, plus manifest
+- Test suite: 49 cases asserting which file each payload plays, plus manifest
   cross-checks. CI runs it on Linux and macOS, and again with `ffmpeg`,
   `yt-dlp` and `python3` removed from `PATH`.
 

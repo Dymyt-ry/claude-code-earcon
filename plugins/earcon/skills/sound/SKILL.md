@@ -41,15 +41,16 @@ earcon reset <slot|all>  # back to the bundled tones
 
 Run `earcon status` first and read it before guessing:
 
-- `player: none found` — no audio player on the machine. On Linux suggest
-  `ffmpeg` (for `ffplay`), `mpv`, or `mpg123`.
+- `player: none found` — no audio player on the machine. Supported players are
+  `afplay` on macOS; `ffplay`, `mpv`, `mpg123`, `paplay`, or `aplay` on Linux;
+  and `powershell.exe` on WSL or Git Bash.
 - The slot shows `bundled` when the user expected their own file — the import
   did not land; run `earcon set` again and read the error.
 - Everything looks right but nothing is audible — the hooks may not be loaded.
   Ask the user to check `/hooks` for `Notification`, `PreToolUse` and `Stop`
   entries, and to restart the session if they are missing.
 
-For a payload-level trace, set `EARCON_DEBUG=1` in the environment and read
+For a metadata-only trace, set `EARCON_DEBUG=1` in the environment and read
 `debug.log` in the sounds directory shown by `earcon status`.
 
 ## Rights
